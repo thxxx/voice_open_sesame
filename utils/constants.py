@@ -1,5 +1,10 @@
 COMPANION_NAME = "Maya"
 
+DEFAULT_VOICE_PATH = "./audio_samples/output_full.wav"
+DEFAULT_KOREAN_VOICE_PATH = "./audio_samples/shogun.wav"
+
+FOLLOWUP_SILENCE_DELAY = 6.0
+
 LANGUAGE_CODE = {
     "Arabic": "ar",
     "Danish": "da",
@@ -61,8 +66,3 @@ COMMON_STARTERS = [
     "Ah...",
     "Oh!"
 ]
-
-DEFAULT_VOICE_PATH = "./audio_samples/output_full.wav"
-DEFAULT_KOREAN_VOICE_PATH = "./audio_samples/shogun.wav"
-
-FOLLOWUP_SILENCE_DELAY = 6.0

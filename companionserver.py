@@ -1,4 +1,3 @@
-# --- MUST be at the very top (before any vllm/torch import) ---
 import os
 import socket
 import multiprocessing as mp
@@ -12,6 +11,7 @@ import numpy as np
 import librosa
 import torch
 import threading
+import re
 
 from stt.asr import load_asr_backend
 from stt.vad import check_audio_state
@@ -93,7 +93,6 @@ async def stt_worker(sess: Session, in_q: asyncio.Queue, out_q: asyncio.Queue):
                     channels=sess.input_channels,
                     language=sess.language,
                 )
-                dprint(f"[stt_worker] {time.time() - sttstart:.4f}s")
                 await out_q.put({"type": "delta", "text": text})
             except asyncio.CancelledError:
                 break
@@ -153,9 +152,6 @@ async def ws_endpoint(ws: WebSocket):
                 #     name = data.get("name")
                 #     if name:
                 #         sess.name = name
-
-                # if t == 'scriptsession.greeting':
-                #     await answer_greeting(sess)
 
                 # 1) Session start
                 if t == "scriptsession.start":
@@ -379,9 +375,6 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
         if task and not task.done():
             task.cancel()
 
-            if task_name == "tts_task":
-                # 
-
             try:
                 await asyncio.wait_for(task, timeout=0.2)
             except asyncio.CancelledError:
@@ -403,29 +396,30 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
     for q in (sess.tts_in_q,):
         drain_aio_queue(q)
 
-    partial_text = await _transcribe_tts_buffer(sess)
-    print("[interrupt_output] partial_text: ", partial_text)
-    if partial_text:
-        trimmed = _trim_last_two_words(partial_text.strip())
-        if trimmed:
-            print("[interrupt_output] trimmed: ", trimmed)
-            try:
-                if not hasattr(sess, "outputs") or sess.outputs is None:
-                    sess.outputs = []
-                sess.outputs.append(trimmed)
-            except Exception:
-                pass
-            try:
-                sess.out_q.put_nowait(jdumps({"type": "interrupt_output", "text": trimmed}))
-            except Exception:
-                pass
-
-    # Replace stop_event
     sess.tts_stop_event = threading.Event()
 
-    # Restart streamer/conversation pipeline
     if sess.running:
         if sess.tts_task is None:
             sess.tts_task = asyncio.create_task(chatter_streamer(sess))
         if sess.conversation_task is None:
             sess.conversation_task = asyncio.create_task(conversation_worker(sess))
+
+    try:
+        partial_text = await _transcribe_tts_buffer(sess)
+        print("[interrupt_output] partial_text: ", partial_text)
+        if partial_text != "":
+            trimmed = _trim_last_two_words(partial_text.strip())
+            if trimmed:
+                print("[interrupt_output] trimmed: ", trimmed)
+                try:
+                    if not hasattr(sess, "outputs") or sess.outputs is None:
+                        sess.outputs = []
+                    sess.outputs[-1] = trimmed
+                except Exception:
+                    pass
+                try:
+                    sess.out_q.put_nowait(jdumps({"type": "interrupt_output", "text": trimmed}))
+                except Exception:
+                    pass
+    except Exception as e:
+        print("Error ", e)

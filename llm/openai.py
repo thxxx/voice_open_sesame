@@ -3,6 +3,8 @@ from typing import Callable
 from openai import OpenAI
 import time
 from utils.constants import COMPANION_NAME, LANGUAGE_CODE_REVERSED
+import re
+import json
 
 OPENAI_KEY = os.environ.get("OPENAI_KEY")
 client = OpenAI(api_key=OPENAI_KEY)
@@ -239,7 +241,7 @@ Example: “Put that over there.” (Without specifying what or where in text.)
 ---
 """
 
-    response = xclient.chat.completions.create(
+    response = client.chat.completions.create(
         model='gpt-4.1-mini',
         messages=[
             {"role": "system", "content": f"""

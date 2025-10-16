@@ -64,7 +64,6 @@ def jdumps(o): return json.dumps(o).decode()
 
 @torch.inference_mode()
 async def chatter_streamer(sess: Session):
-    print("[chatter_streamer] START")
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
@@ -177,7 +176,6 @@ async def chatter_streamer(sess: Session):
                     continue
                 is_last = True
                 if "<cont>" in text_chunk:
-                    print(f"Text {text_chunk} is not done yet")
                     is_last=False
                     text_chunk = re.sub('<cont>', '', text_chunk)
                 
@@ -218,7 +216,7 @@ async def chatter_streamer(sess: Session):
                 if matched is not None:
                     token = matched.lower().strip().replace(".", "").replace(",", "")
                     idx = random.choice([0, 1, 2])
-                    sample_path = f"./samples/{token}_{idx}.wav"
+                    sample_path = f"./audio_samples/{token}_{idx}.wav"
                     try:
                         wav, sr_file = torchaudio.load(sample_path)  # (ch, T)
                         if wav.dim() == 2 and wav.size(0) > 1:
@@ -326,7 +324,7 @@ async def chatter_streamer(sess: Session):
     except Exception as e:
         await sess.out_q.put(jdumps({"type": "tts_error", "message": str(e)}))
     finally:
-        print("[chatter_streamer] END")
+        pass
 
 async def proactive_say(sess: Session):
     loop = asyncio.get_running_loop()
@@ -383,4 +381,5 @@ def schedule_silence_nudge(sess: Session, delay: float = 5.0, remain: float = 1.
             pass
 
     # Register new timer
-    # sess.silence_nudge_task = asyncio.create_task(waiter())
+    if random.random() > 0.7:
+        sess.silence_nudge_task = asyncio.create_task(waiter())
