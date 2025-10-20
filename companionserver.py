@@ -301,7 +301,65 @@ async def ws_endpoint(ws: WebSocket):
 
             elif msg.get("bytes") is not None:
                 buf: bytes = msg["bytes"]
-                await ws.send_text(jdumps({"type": "binary_ack", "payload": {"received_bytes": len(buf)}}))
+
+                dec = ensure_opus_decoder(sess, sr=INPUT_SAMPLE_RATE, ch=1)
+                try:
+                    audio = decode_opus_float(frm["payload"], dec, sr=INPUT_SAMPLE_RATE)  # np.float32, mono
+                except Exception as e:
+                    dprint("[Opus decode error]", e)
+                    continue
+
+                try:
+                    vad_event = check_audio_state(audio)
+
+                    if sess.current_audio_state != "start":
+                        sess.pre_roll.append(audio)
+                        if vad_event == "start":
+                            energy_ok = get_volume(np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))[1] > 0.02
+                            if not energy_ok:
+                                continue
+
+                            sess.current_audio_state = "start"
+                            cancel_silence_nudge(sess)
+                            if len(sess.pre_roll) > 0:
+                                sess.audios = np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
+                            else:
+                                sess.audios = audio.astype(np.float32, copy=False)
+                            print("[Voice Start]")
+                            sess.pre_roll.clear()
+                            sess.buf_count = 0
+                        continue
+
+                    sess.audios = np.concatenate([sess.audios, audio]).astype(np.float32, copy=False)
+                    sess.buf_count += 1
+
+                    if vad_event == "end" and sess.transcript != "":
+                        print("[Voice End] - ", sess.transcript)
+                        await sess.out_q.put(jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True}))
+                        sess.current_audio_state = "none"
+                        sess.audios = np.empty(0, dtype=np.float32)
+                        sess.end_scripting_time = time.time() % 1000
+                        sess.answer_q.put_nowait(sess.transcript)
+                        sess.transcript = ""
+                        continue
+
+                    if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
+                        await interrupt_output(sess, reason="start speaking")
+                        sess.audios = sess.audios[-WHISPER_SR * 20:]
+                        pcm_bytes = (np.clip(sess.audios, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+                        try:
+                            sess.stt_in_q.put_nowait(pcm_bytes)
+                        except asyncio.QueueFull:
+                            try:
+                                _ = sess.stt_in_q.get_nowait()
+                                sess.stt_in_q.task_done()
+                            except asyncio.QueueEmpty:
+                                pass
+                            try:
+                                sess.stt_in_q.put_nowait(pcm_bytes)
+                            except asyncio.QueueFull:
+                                pass
+                        sess.buf_count = 0
 
     except WebSocketDisconnect:
         pass
