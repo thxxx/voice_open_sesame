@@ -22,6 +22,7 @@ class Session:
         self.user_memory = ''
         self.my_memory = ''
         self.current_time = ""
+        self.bufs = []
 
         self.tts_buffer_sr = 24000
         self.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -48,6 +49,7 @@ class Session:
         self.language = "ko"
         self.tts_task: Optional[asyncio.Task] = None
         self.stt_task: Optional[asyncio.Task] = None
+        self.silence_nudge_task: Optional[asyncio.Task] = None
         self.stt_out_consumer_task: Optional[asyncio.Task] = None
         self.tts_in_q: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
 

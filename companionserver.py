@@ -24,6 +24,7 @@ from utils.utils import dprint, lprint
 from llm.conversation import conversation_worker, answer_greeting
 
 from tts.chatter_infer import chatter_streamer, cancel_silence_nudge
+from utils.opus import ensure_opus_decoder, decode_opus_float, parse_frame
 
 INPUT_SAMPLE_RATE = 24000
 WHISPER_SR = 16000
@@ -302,6 +303,14 @@ async def ws_endpoint(ws: WebSocket):
             elif msg.get("bytes") is not None:
                 buf: bytes = msg["bytes"]
 
+                frm = parse_frame(buf)
+                if not frm:
+                    await ws.send_text(jdumps({"type": "binary_ack", "payload": {"received_bytes": len(buf)}}))
+                    continue
+            
+                if frm["is_config"]:
+                    continue
+
                 dec = ensure_opus_decoder(sess, sr=INPUT_SAMPLE_RATE, ch=1)
                 try:
                     audio = decode_opus_float(frm["payload"], dec, sr=INPUT_SAMPLE_RATE)  # np.float32, mono
@@ -309,58 +318,65 @@ async def ws_endpoint(ws: WebSocket):
                     dprint("[Opus decode error]", e)
                     continue
 
-                try:
-                    vad_event = check_audio_state(audio)
+                if len(sess.bufs) == 0:
+                    sess.bufs.append(audio)
+                    continue
+                else:
+                    sess.bufs.append(audio)
+                    audio = np.concatenate(sess.bufs, axis=0).astype(np.float32)
+                    sess.bufs = []
 
-                    if sess.current_audio_state != "start":
-                        sess.pre_roll.append(audio)
-                        if vad_event == "start":
-                            energy_ok = get_volume(np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))[1] > 0.02
-                            if not energy_ok:
-                                continue
+                vad_event = check_audio_state(audio)
 
-                            sess.current_audio_state = "start"
-                            cancel_silence_nudge(sess)
-                            if len(sess.pre_roll) > 0:
-                                sess.audios = np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
-                            else:
-                                sess.audios = audio.astype(np.float32, copy=False)
-                            print("[Voice Start]")
-                            sess.pre_roll.clear()
-                            sess.buf_count = 0
-                        continue
+                if sess.current_audio_state != "start":
+                    sess.pre_roll.append(audio)
+                    if vad_event == "start":
+                        energy_ok = get_volume(np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))[1] > 0.02
+                        if not energy_ok:
+                            continue
 
-                    sess.audios = np.concatenate([sess.audios, audio]).astype(np.float32, copy=False)
-                    sess.buf_count += 1
+                        sess.current_audio_state = "start"
+                        cancel_silence_nudge(sess)
+                        if len(sess.pre_roll) > 0:
+                            sess.audios = np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
+                        else:
+                            sess.audios = audio.astype(np.float32, copy=False)
+                        print("[Voice Start]")
+                        sess.pre_roll.clear()
+                        sess.buf_count = 0
+                    continue
 
-                    if vad_event == "end" and sess.transcript != "":
-                        print("[Voice End] - ", sess.transcript)
-                        await sess.out_q.put(jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True}))
-                        sess.current_audio_state = "none"
-                        sess.audios = np.empty(0, dtype=np.float32)
-                        sess.end_scripting_time = time.time() % 1000
-                        sess.answer_q.put_nowait(sess.transcript)
-                        sess.transcript = ""
-                        continue
+                sess.audios = np.concatenate([sess.audios, audio]).astype(np.float32, copy=False)
+                sess.buf_count += 1
 
-                    if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
-                        await interrupt_output(sess, reason="start speaking")
-                        sess.audios = sess.audios[-WHISPER_SR * 20:]
-                        pcm_bytes = (np.clip(sess.audios, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+                if vad_event == "end" and sess.transcript != "":
+                    print("[Voice End] - ", sess.transcript)
+                    await sess.out_q.put(jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True}))
+                    sess.current_audio_state = "none"
+                    sess.audios = np.empty(0, dtype=np.float32)
+                    sess.end_scripting_time = time.time() % 1000
+                    sess.answer_q.put_nowait(sess.transcript)
+                    sess.transcript = ""
+                    continue
+
+                if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
+                    await interrupt_output(sess, reason="start speaking")
+                    sess.audios = sess.audios[-WHISPER_SR * 20:]
+                    pcm_bytes = (np.clip(sess.audios, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+                    try:
+                        sess.stt_in_q.put_nowait(pcm_bytes)
+                    except asyncio.QueueFull:
+                        try:
+                            _ = sess.stt_in_q.get_nowait()
+                            sess.stt_in_q.task_done()
+                        except asyncio.QueueEmpty:
+                            pass
                         try:
                             sess.stt_in_q.put_nowait(pcm_bytes)
                         except asyncio.QueueFull:
-                            try:
-                                _ = sess.stt_in_q.get_nowait()
-                                sess.stt_in_q.task_done()
-                            except asyncio.QueueEmpty:
-                                pass
-                            try:
-                                sess.stt_in_q.put_nowait(pcm_bytes)
-                            except asyncio.QueueFull:
-                                pass
-                        sess.buf_count = 0
-
+                            pass
+                    sess.buf_count = 0
+                
     except WebSocketDisconnect:
         pass
     finally:
@@ -380,11 +396,11 @@ async def stt_out_consumer(sess: Session):
             sess.stt_out_q.task_done()
 
 
-def _trim_last_two_words(s: str) -> str:
+def _trim_last_one_words(s: str) -> str:
     words = re.findall(r"\S+", s)
-    if len(words) <= 2:
+    if len(words) <= 1:
         return ""
-    return " ".join(words[:-2])
+    return " ".join(words[:-1])
 
 async def _transcribe_tts_buffer(sess: Session) -> str:
     buf = getattr(sess, "tts_pcm_buffer", np.empty(0, dtype=np.float32))
@@ -414,6 +430,7 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
 
     now = time.time()
     if now - getattr(sess, "last_interrupt_ts", 0) < 1.0:
+        print("If under 1s")
         return
     sess.last_interrupt_ts = now
 
@@ -427,7 +444,6 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
     except Exception:
         pass
 
-    # Cancel TTS/LLM tasks
     for task_name in ("tts_task", "conversation_task", "silence_nudge_task"):
         task = getattr(sess, task_name, None)
         if task and not task.done():
@@ -466,18 +482,12 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
         partial_text = await _transcribe_tts_buffer(sess)
         print("[interrupt_output] partial_text: ", partial_text)
         if partial_text != "":
-            trimmed = _trim_last_two_words(partial_text.strip())
-            if trimmed:
-                print("[interrupt_output] trimmed: ", trimmed)
-                try:
-                    if not hasattr(sess, "outputs") or sess.outputs is None:
-                        sess.outputs = []
-                    sess.outputs[-1] = trimmed
-                except Exception:
-                    pass
-                try:
-                    sess.out_q.put_nowait(jdumps({"type": "interrupt_output", "text": trimmed}))
-                except Exception:
-                    pass
+            trimmed = _trim_last_one_words(partial_text.strip())
+            print("[interrupt_output] trimmed: ", trimmed)
+            try:
+                sess.outputs[-1] = trimmed
+                sess.out_q.put_nowait(jdumps({"type": "interrupt_output", "text": trimmed}))
+            except Exception:
+                pass
     except Exception as e:
         print("Error ", e)

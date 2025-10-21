@@ -137,9 +137,9 @@ async def chatter_streamer(sess: Session):
                         text_chunk,
                         audio_prompt_path=ref_audio,
                         language_id=sess.language,
-                        chunk_size=32, # This should be adjusted for realtime factor
+                        chunk_size=28, # This should be adjusted for realtime factor
                         exaggeration=0.4,
-                        cfg_weight=0.55,
+                        cfg_weight=0.5,
                         temperature=0.75,
                         repetition_penalty=1.3,
                         min_p=0.02,
@@ -376,6 +376,7 @@ def schedule_silence_nudge(sess: Session, delay: float = 5.0, remain: float = 1.
                 return
             await asyncio.sleep(delay)
             if getattr(sess, "current_audio_state", "none") == "none":
+                print("\nproactive say\n")
                 await proactive_say(sess)
         except asyncio.CancelledError:
             pass

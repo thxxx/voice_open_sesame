@@ -71,7 +71,7 @@ async def answer_greeting(sess: Session):
         loop.call_soon_threadsafe(
             sess.out_q.put_nowait,
             jdumps({
-                "type": "translated",
+                "type": "speaking",
                 "script": sess.current_transcript,
                 "text": answer_text,
                 "is_final": True
@@ -106,13 +106,12 @@ async def run_answer_async(sess: Session) -> str:
         nonlocal sentence, sent_chars
         # 토큰 누적
         sentence += tok
-        safe_push_out({"type": "translated", "text": tok, "is_final": False})
+        safe_push_out({"type": "speaking", "text": tok, "is_final": False})
         # 버퍼 기준으로 <silence N> 완성 여부 확인 후 즉시 플러시
         flush_buffer_if_has_silence()
         return
 
     def run_blocking():
-        print("sess.outputs ", sess.outputs)
         return chat_reply(
             prev_scripts=sess.transcripts[-6:],
             prev_answers=sess.outputs[-6:],
@@ -123,11 +122,9 @@ async def run_answer_async(sess: Session) -> str:
             current_time=sess.current_time
         )
 
-    # 모델 호출 (blocking → executor)
     output = await loop.run_in_executor(None, run_blocking)
     answer_text = output.get("text", "") or ""
 
-    # 남은 꼬리(아직 안 보낸 부분)도 동일 규칙으로 쪼개서 밀어넣기
     tail = answer_text[sent_chars:]
     if tail:
         pieces = split_by_silence_markers(tail)
@@ -136,9 +133,8 @@ async def run_answer_async(sess: Session) -> str:
     await asyncio.sleep(0)
     cts = sess.current_transcript
     
-    # 최종 알림 (그대로 둠)
     def _g():
-        sess.out_q.put_nowait(jdumps({"type": "translated", "script": cts, "text": answer_text, "is_final": True}))
+        sess.out_q.put_nowait(jdumps({"type": "speaking", "script": cts, "text": answer_text, "is_final": True}))
     loop.call_soon_threadsafe(_g)
     
     return answer_text

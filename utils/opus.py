@@ -35,13 +35,8 @@ def ensure_opus_decoder(sess, sr=24000, ch=1):
     return sess.opus_decoder
 
 def decode_opus_float(payload: bytes, decoder: OpusDecoder, sr=24000) -> np.ndarray:
-    """
-    WebCodecs 쪽에서 20ms 프레임(기본)으로 보낸다면 24kHz 기준 480샘플/채널.
-    opuslib.decode()의 frame_size는 '최대 디코드 샘플 수' 힌트라 480로 주면 충분.
-    """
-    frame_size = 480  # 20ms @ 24kHz
+    frame_size = 1440 # 60ms, 24kHz
     pcm = decoder.decode(payload, frame_size, decode_fec=False)
-    # opuslib는 Python bytes(PCM16LE) 반환
     pcm_i16 = np.frombuffer(pcm, dtype="<i2")  # little-endian int16
     pcm_f32 = (pcm_i16.astype(np.float32) / 32767.0)
     return pcm_f32
