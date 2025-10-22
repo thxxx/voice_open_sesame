@@ -64,5 +64,7 @@ COMMON_STARTERS = [
     "Uh...",
     "Uhm...",
     "Ah...",
-    "Oh!"
+    "Oh!",
+    "Cool.. ",
+    "Nice.. "
 ]

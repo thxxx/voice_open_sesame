@@ -238,6 +238,13 @@ Example: “Didn’t see him yesterday. Probably busy.”
 
 - Context-dependent: Spoken words often rely on shared physical or situational context, making them less explicit.
 Example: “Put that over there.” (Without specifying what or where in text.)
+
+Don't say unnatural sentences like
+- here whenever you wanna chat.
+- no rush at all, i'm all ears.
+
+These are so boring.
+
 ---
 """
 

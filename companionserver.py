@@ -150,14 +150,10 @@ async def ws_endpoint(ws: WebSocket):
                         sess.prompt = inputprompt
 
                 if t == "scriptsession.clonevoice":
-                    print("[scriptsession.clonevoice] : ", data)
                     if data.get("voice") is not None:
-                        sess.voice = data.get("voice")
-
-                # if t == 'scriptsession.setname':
-                #     name = data.get("name")
-                #     if name:
-                #         sess.name = name
+                        voice = data.get("voice")
+                        audio = process_data_to_audio(voice, input_sample_rate=24000, whisper_sr=WHISPER_SR)
+                        sess.ref_audios.put(audio)
 
                 # 1) Session start
                 if t == "scriptsession.start":
@@ -210,7 +206,7 @@ async def ws_endpoint(ws: WebSocket):
 
                             if sess.current_audio_state != "start":
                                 sess.pre_roll.append(audio)
-                                if vad_event == "start":  # new speech began
+                                if vad_event == "start":
                                     energy_ok = get_volume(
                                         np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
                                     )[1] > 0.02
@@ -247,7 +243,6 @@ async def ws_endpoint(ws: WebSocket):
                                 continue
 
                             if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
-                                
                                 sess.audios = sess.audios[-WHISPER_SR * 20 :]
                                 pcm_bytes = (
                                     np.clip(sess.audios, -1.0, 1.0) * 32767.0
@@ -402,7 +397,9 @@ def _trim_last_one_words(s: str) -> str:
 async def _transcribe_tts_buffer(sess: Session) -> str:
     buf = getattr(sess, "tts_pcm_buffer", np.empty(0, dtype=np.float32))
     sr  = getattr(sess, "tts_buffer_sr", 24000)
-    if buf.size == 0:
+
+    print("buf size : ", buf.size)
+    if buf.size < 500:
         return ""
     # float32 [-1,1] → int16 bytes
     pcm_i16 = np.clip(buf, -1.0, 1.0)

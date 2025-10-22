@@ -28,33 +28,37 @@ def pack_frame(seq, ts_usec, payload: bytes, is_final=False):
 class OpusEnc:
     def __init__(self, sr=24000, channels=1, bitrate=32000):
         self.sr, self.ch = sr, channels
-        self.frame_ms = 20                           # 20ms 권장
-        self.frame_size = sr * self.frame_ms // 1000 # samples per channel
+        self.frame_ms = 20
+        self.frame_size = sr * self.frame_ms // 1000  # 480 @ 24k
         self.enc = opuslib.Encoder(sr, channels, opuslib.APPLICATION_AUDIO)
         try:
             self.enc.bitrate = bitrate
         except Exception:
             self.enc.set_bitrate(bitrate)
+        self._carry = np.empty(0, dtype=np.int16)  # <--- NEW
 
     def encode(self, pcm_f32: np.ndarray) -> list[bytes]:
-        """
-        pcm_f32: shape (N,), float32 [-1, 1]
-        returns: list of raw opus packets (bytes), each ~= 20ms
-        """
-        # float32 -> int16 (mono interleaved)
+        # float32 -> int16
         pcm_i16 = np.clip(pcm_f32, -1.0, 1.0)
         pcm_i16 = (pcm_i16 * 32767.0).astype(np.int16, copy=False)
+
+        # prepend carry
+        if self._carry.size:
+            pcm_i16 = np.concatenate([self._carry, pcm_i16], axis=0)
 
         frames = []
         n = pcm_i16.shape[0]
         i = 0
+        # consume only full frames
         while i + self.frame_size <= n:
-            chunk_i16 = pcm_i16[i:i+self.frame_size]
+            chunk_i16 = pcm_i16[i:i + self.frame_size]
             pkt = self.enc.encode(chunk_i16.tobytes(), self.frame_size)
             frames.append(pkt)
             i += self.frame_size
-        return frames
 
+        # save leftover as next-call carry
+        self._carry = pcm_i16[i:] if i < n else np.empty(0, dtype=np.int16)
+        return frames
 
 ENC_EXEC = ThreadPoolExecutor(max_workers=6)
 
@@ -67,7 +71,8 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        OVERLAP = int(0.03 * sr)
+        OVERLAP = 300
+        # OVERLAP = int(0.001 * sr)
 
         sess.tts_buffer_sr = sr
         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -79,9 +84,6 @@ async def chatter_streamer(sess: Session):
         sess.out_q.put_nowait(jdumps({
             "type": "tts_audio_meta",
             "format": "opus",
-            "sample_rate": sr,
-            "channels": 1,
-            "frame_ms": 20,
         }))
 
         def put_binary(out_q, b: bytes):
@@ -114,13 +116,16 @@ async def chatter_streamer(sess: Session):
             pcm_f32 = pcm.numpy().astype(np.float32, copy=False)
         
             frames = enc.encode(pcm_f32)
-        
+
             now = time.time()
-            for pkt in frames:
-                ts_usec = int((now - (t0 or now)) * 1e6)
+            base_ts = int(((now) - (t0 or now)) * 1e6)  # 배치 시작 기준
+            dt = int(enc.frame_ms * 1000)  
+
+            for k, pkt in enumerate(frames):
+                ts_usec = base_ts + k * dt
                 put_binary(out_q, pack_frame(seq_ref["seq"], ts_usec, pkt, is_final=False))
                 seq_ref["seq"] += 1
-        
+            
             if is_final:
                 ts_usec = int((time.time() - (t0 or now)) * 1e6)
                 put_binary(out_q, pack_frame(seq_ref["seq"], ts_usec, b"", is_final=True))
@@ -138,7 +143,7 @@ async def chatter_streamer(sess: Session):
                         audio_prompt_path=ref_audio,
                         language_id=sess.language,
                         chunk_size=28, # This should be adjusted for realtime factor
-                        exaggeration=0.4,
+                        exaggeration=0.6,
                         cfg_weight=0.5,
                         temperature=0.75,
                         repetition_penalty=1.3,
@@ -228,19 +233,20 @@ async def chatter_streamer(sess: Session):
                     except Exception as e:
                         print(f"[starter] failed to load '{sample_path}': {e}")
 
-                last_length = 0
-                last_tail: torch.Tensor | None = None
-                start_time = time.time()
 
                 # === TTS producer (thread) start (send sample wav and simultaneous) ===
                 if matched is not None:
                     text_chunk = re.sub(matched, '', text_chunk[:10]) + text_chunk[10:]
                 
+                last_length = 0
+                last_tail_audio: torch.Tensor | None = None
+                start_time = time.time()
+                
                 start_tts_producer_in_thread(text_chunk, ref_audio, tts_chunk_q)
                 start_sending_at = 0
                 total_audio_seconds = 0
 
-                # === Consume: Get from queue and cross-fade & send ===
+                allaudios = torch.zeros(1, 0).to('cuda')
                 while True:
                     if sess.tts_stop_event.is_set():
                         try:
@@ -253,56 +259,71 @@ async def chatter_streamer(sess: Session):
                     evt_type, payload = await tts_chunk_q.get()
 
                     if evt_type == "chunk":
-                        wav: torch.Tensor = payload  # (ch, T)
-                        if wav is None or wav.numel() == 0:
-                            await asyncio.sleep(0)
-                            continue
-                        new_total = wav.shape[-1]
-                        delta = new_total - last_length
-                        if delta <= 0:
-                            await asyncio.sleep(0)
-                            continue
-                        new_part = wav[:, last_length:new_total]
-
-                        # --- Cross-fade ---
-                        if last_tail is None:
-                            out_chunk = new_part
-                        else:
-                            L = min(OVERLAP, new_part.shape[-1], last_tail.shape[-1])
-                            if L > 0:
-                                dtype = wav.dtype
-                                device = wav.device
-                                fade_in  = torch.linspace(0, 1, L, device=device, dtype=dtype)
-                                fade_out = 1.0 - fade_in
-                                mixed = last_tail[:, -L:] * fade_out + new_part[:, :L] * fade_in
-                                tail  = new_part[:, L:]
-                                out_chunk = torch.cat([mixed, tail], dim=-1)
-                            else:
+                        try:
+                            wav: torch.Tensor = payload  # (ch, T)
+                            if wav is None or wav.numel() == 0:
+                                await asyncio.sleep(0)
+                                continue
+                            
+                            new_total_length = wav.shape[-1]
+                            current_length = new_total_length - last_length
+                            if current_length <= 0:
+                                await asyncio.sleep(0)
+                                continue
+                            
+                            new_part = wav[:, last_length:]
+    
+                            if last_tail_audio is None: # First audio chunk
                                 out_chunk = new_part
-
-                        new_tail_start = max(0, new_total - OVERLAP)
-                        last_tail = wav[:, new_tail_start:new_total].detach()
-
-                        print(f"[TTS {(new_total-last_length)/24000:.3f}] - takes {time.time() - start_time:.3f}")
-                        total_audio_seconds += (new_total-last_length)/24000
-                        
-                        await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
-
-                        if start_sending_at == 0:
-                            start_sending_at = time.time()
-                        
-                        last_length = new_total
-                        await asyncio.sleep(0)
+                            else:
+                                L = min(OVERLAP, new_part.shape[-1], last_tail_audio.shape[-1])
+                                if L > 0:
+                                    dtype = wav.dtype
+                                    device = wav.device
+                                    fade_in  = torch.linspace(0, 1, L, device=device, dtype=dtype)
+                                    fade_out = 1.0 - fade_in
+    
+                                    overlapped_part = last_tail_audio[:, -L:] * fade_out + new_part[:, :L] * fade_in
+                                    tail = new_part[:, L:]
+                                    out_chunk = torch.cat([overlapped_part, tail], dim=-1)
+                                else:
+                                    out_chunk = new_part
+                            print("new_part : ", new_part.shape, new_total_length)
+    
+                            new_tail_start = max(0, new_total_length - OVERLAP)
+                            last_tail_audio = wav[:, new_tail_start:]
+    
+                            print(f"[TTS {(new_total_length-last_length)/24000:.3f}] - takes {time.time() - start_time:.3f}")
+                            total_audio_seconds += (new_total_length-last_length)/24000
+    
+                            try:
+                                allaudios = torch.cat([allaudios, out_chunk], dim=-1)
+                            except Exception as e:
+                                print(e)
+                            
+                            await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
+    
+                            last_length = new_total_length
+                            if start_sending_at == 0:
+                                start_sending_at = time.time()
+                            
+                            await asyncio.sleep(0)
+                        except Exception as e:
+                            print("Erorr : ", e)
 
                     elif evt_type == "eos":
                         if not is_last:
                             break
                             
-                        if last_tail is not None and last_tail.numel() > 0:
-                            await emit_opus_frames(sess.out_q, opus_enc, last_tail, sr, seq_ref, is_final=True, t0=session_t0)
+                        sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
+                        if last_tail_audio is not None and last_tail_audio.numel() > 0:
+                            await emit_opus_frames(sess.out_q, opus_enc, last_tail_audio, sr, seq_ref, is_final=True, t0=session_t0)
                         else:
                             await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
-                        sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
+
+                        wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
+                        print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
+                        torchaudio.save("test2.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
 
                         taken = time.time() - start_sending_at
                         remaining_until_audio_end = total_audio_seconds - taken + 1
@@ -356,7 +377,7 @@ async def proactive_say(sess: Session):
     loop.call_soon_threadsafe(sess.tts_in_q.put_nowait, text)
     loop.call_soon_threadsafe(
         sess.out_q.put_nowait,
-        jdumps({"type": "translated", "script": "", "text": text, "is_final": True})
+        jdumps({"type": "speaking", "script": "", "text": text, "is_final": True})
     )
 
 def cancel_silence_nudge(sess: Session):
@@ -376,11 +397,10 @@ def schedule_silence_nudge(sess: Session, delay: float = 5.0, remain: float = 1.
                 return
             await asyncio.sleep(delay)
             if getattr(sess, "current_audio_state", "none") == "none":
-                print("\nproactive say\n")
                 await proactive_say(sess)
         except asyncio.CancelledError:
             pass
 
     # Register new timer
-    if random.random() > 0.7:
+    if random.random() > 0.5:
         sess.silence_nudge_task = asyncio.create_task(waiter())
