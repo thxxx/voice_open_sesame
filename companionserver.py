@@ -149,6 +149,11 @@ async def ws_endpoint(ws: WebSocket):
                     if inputprompt:
                         sess.prompt = inputprompt
 
+                if t == "scriptsession.clonevoice":
+                    print("[scriptsession.clonevoice] : ", data)
+                    if data.get("voice") is not None:
+                        sess.voice = data.get("voice")
+
                 # if t == 'scriptsession.setname':
                 #     name = data.get("name")
                 #     if name:
@@ -201,13 +206,11 @@ async def ws_endpoint(ws: WebSocket):
                                 dprint("[NO AUDIO]")
                                 continue
 
-                            # VAD
                             vad_event = check_audio_state(audio)
 
                             if sess.current_audio_state != "start":
                                 sess.pre_roll.append(audio)
                                 if vad_event == "start":  # new speech began
-                                    # quick energy gate
                                     energy_ok = get_volume(
                                         np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
                                     )[1] > 0.02
@@ -216,10 +219,9 @@ async def ws_endpoint(ws: WebSocket):
 
                                     sess.current_audio_state = "start"
                                     cancel_silence_nudge(sess)
+                                    await interrupt_output(sess, reason="start speaking")
                                     if len(sess.pre_roll) > 0:
-                                        sess.audios = (
-                                            np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
-                                        )
+                                        sess.audios = (np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))
                                     else:
                                         sess.audios = audio.astype(np.float32, copy=False)
 
@@ -231,7 +233,7 @@ async def ws_endpoint(ws: WebSocket):
                             sess.audios = np.concatenate([sess.audios, audio])
                             sess.buf_count += 1
 
-                            if vad_event == "end" and sess.transcript != "":
+                            if vad_event == "end" and sess.transcript != "": # immediately stop
                                 print("[Voice End] - ", sess.transcript)
                                 await sess.out_q.put(
                                     jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True})
@@ -245,7 +247,7 @@ async def ws_endpoint(ws: WebSocket):
                                 continue
 
                             if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
-                                await interrupt_output(sess, reason="start speaking")
+                                
                                 sess.audios = sess.audios[-WHISPER_SR * 20 :]
                                 pcm_bytes = (
                                     np.clip(sess.audios, -1.0, 1.0) * 32767.0
@@ -331,12 +333,14 @@ async def ws_endpoint(ws: WebSocket):
                 if sess.current_audio_state != "start":
                     sess.pre_roll.append(audio)
                     if vad_event == "start":
-                        energy_ok = get_volume(np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))[1] > 0.02
-                        if not energy_ok:
+                        energy_enough = get_volume(np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False))[1] > 0.02
+                        if not energy_enough:
                             continue
 
                         sess.current_audio_state = "start"
                         cancel_silence_nudge(sess)
+                        await interrupt_output(sess, reason="start speaking")
+
                         if len(sess.pre_roll) > 0:
                             sess.audios = np.concatenate(list(sess.pre_roll) + [audio]).astype(np.float32, copy=False)
                         else:
@@ -355,26 +359,19 @@ async def ws_endpoint(ws: WebSocket):
                     sess.current_audio_state = "none"
                     sess.audios = np.empty(0, dtype=np.float32)
                     sess.end_scripting_time = time.time() % 1000
-                    sess.answer_q.put_nowait(sess.transcript)
+                    sess.answer_q.put_nowait(sess.transcript) # answer_q will be used as input for llm response
                     sess.transcript = ""
                     continue
 
-                if sess.buf_count % 8 == 7 and sess.current_audio_state == "start":
-                    await interrupt_output(sess, reason="start speaking")
+                if sess.buf_count % 5 == 4 and sess.current_audio_state == "start":
                     sess.audios = sess.audios[-WHISPER_SR * 20:]
                     pcm_bytes = (np.clip(sess.audios, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
                     try:
                         sess.stt_in_q.put_nowait(pcm_bytes)
                     except asyncio.QueueFull:
-                        try:
-                            _ = sess.stt_in_q.get_nowait()
-                            sess.stt_in_q.task_done()
-                        except asyncio.QueueEmpty:
-                            pass
-                        try:
-                            sess.stt_in_q.put_nowait(pcm_bytes)
-                        except asyncio.QueueFull:
-                            pass
+                        _ = sess.stt_in_q.get_nowait()
+                        sess.stt_in_q.task_done()
+                        sess.stt_in_q.put_nowait(pcm_bytes)
                     sess.buf_count = 0
                 
     except WebSocketDisconnect:
@@ -427,6 +424,7 @@ async def _transcribe_tts_buffer(sess: Session) -> str:
 
 async def interrupt_output(sess: Session, reason: str = "start speaking"):
     print("[interrupt_output] ", reason)
+    st = time.time()
 
     now = time.time()
     if now - getattr(sess, "last_interrupt_ts", 0) < 1.0:
@@ -491,3 +489,5 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
                 pass
     except Exception as e:
         print("Error ", e)
+    
+    print("[interrupt_output] took ", time.time() - st)
