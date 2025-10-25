@@ -19,6 +19,8 @@ import numpy as np
 import struct
 
 MAGIC = b'\xA1\x51'
+CHUNK_SIZE = 28
+
 
 def pack_frame(seq, ts_usec, payload: bytes, is_final=False):
     flags = 1 if is_final else 0
@@ -71,8 +73,8 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        OVERLAP = 300
-        # OVERLAP = int(0.001 * sr)
+        TRIM = 1200
+        OVERLAP = int(0.02 * sr)
 
         sess.tts_buffer_sr = sr
         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -142,7 +144,7 @@ async def chatter_streamer(sess: Session):
                         text_chunk,
                         audio_prompt_path=ref_audio,
                         language_id=sess.language,
-                        chunk_size=28, # This should be adjusted for realtime factor
+                        chunk_size=CHUNK_SIZE, # This should be adjusted for realtime factor
                         exaggeration=0.6,
                         cfg_weight=0.5,
                         temperature=0.75,
@@ -238,7 +240,7 @@ async def chatter_streamer(sess: Session):
                 if matched is not None:
                     text_chunk = re.sub(matched, '', text_chunk[:10]) + text_chunk[10:]
                 
-                last_length = 0
+                prev_audio_end_at = 0
                 last_tail_audio: torch.Tensor | None = None
                 start_time = time.time()
                 
@@ -247,6 +249,7 @@ async def chatter_streamer(sess: Session):
                 total_audio_seconds = 0
 
                 allaudios = torch.zeros(1, 0).to('cuda')
+                ii=0
                 while True:
                     if sess.tts_stop_event.is_set():
                         try:
@@ -259,53 +262,52 @@ async def chatter_streamer(sess: Session):
                     evt_type, payload = await tts_chunk_q.get()
 
                     if evt_type == "chunk":
+                        ii += 1
                         try:
                             wav: torch.Tensor = payload  # (ch, T)
                             if wav is None or wav.numel() == 0:
                                 await asyncio.sleep(0)
                                 continue
                             
-                            new_total_length = wav.shape[-1]
-                            current_length = new_total_length - last_length
-                            if current_length <= 0:
+                            total_audio_length = wav.shape[-1]
+                            if total_audio_length - prev_audio_end_at <= 0:
                                 await asyncio.sleep(0)
                                 continue
-                            
-                            new_part = wav[:, last_length:]
+
+                            print("WAV : ", wav[:, prev_audio_end_at:].shape)
+                            if total_audio_length < TRIM + OVERLAP + int(sr*0.8):
+                                new_part = wav[:, prev_audio_end_at:]
+                                trimmed_part = None
+                            else:
+                                new_part = wav[:, prev_audio_end_at:-TRIM]
+                                trimmed_part = wav[:, -TRIM:]
     
                             if last_tail_audio is None: # First audio chunk
                                 out_chunk = new_part
                             else:
                                 L = min(OVERLAP, new_part.shape[-1], last_tail_audio.shape[-1])
                                 if L > 0:
-                                    dtype = wav.dtype
-                                    device = wav.device
-                                    fade_in  = torch.linspace(0, 1, L, device=device, dtype=dtype)
+                                    fade_in  = torch.linspace(0, 1, L, device=wav.device, dtype=wav.dtype)
                                     fade_out = 1.0 - fade_in
     
                                     overlapped_part = last_tail_audio[:, -L:] * fade_out + new_part[:, :L] * fade_in
-                                    tail = new_part[:, L:]
-                                    out_chunk = torch.cat([overlapped_part, tail], dim=-1)
+                                    audio_part = new_part[:, L:]
+                                    out_chunk = torch.cat([overlapped_part, audio_part], dim=-1)
                                 else:
-                                    out_chunk = new_part
-                            print("new_part : ", new_part.shape, new_total_length)
-    
-                            new_tail_start = max(0, new_total_length - OVERLAP)
-                            last_tail_audio = wav[:, new_tail_start:]
-    
-                            print(f"[TTS {(new_total_length-last_length)/24000:.3f}] - takes {time.time() - start_time:.3f}")
-                            total_audio_seconds += (new_total_length-last_length)/24000
-    
-                            try:
-                                allaudios = torch.cat([allaudios, out_chunk], dim=-1)
-                            except Exception as e:
-                                print(e)
+                                    out_chunk = new_part[:, :]
                             
                             await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
-    
-                            last_length = new_total_length
+                            
+                            last_tail_audio = wav[:, total_audio_length-TRIM-OVERLAP : total_audio_length-TRIM]
+                            
+                            prev_audio_end_at = total_audio_length - TRIM
+                            
+                            allaudios = torch.cat([allaudios, out_chunk], dim=-1)
                             if start_sending_at == 0:
                                 start_sending_at = time.time()
+                            print(f"[TTS {(total_audio_length-prev_audio_end_at)/24000:.3f}] - takes {time.time() - start_time:.3f}")
+                            total_audio_seconds += (total_audio_length-prev_audio_end_at)/24000
+
                             
                             await asyncio.sleep(0)
                         except Exception as e:
@@ -316,8 +318,8 @@ async def chatter_streamer(sess: Session):
                             break
                             
                         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
-                        if last_tail_audio is not None and last_tail_audio.numel() > 0:
-                            await emit_opus_frames(sess.out_q, opus_enc, last_tail_audio, sr, seq_ref, is_final=True, t0=session_t0)
+                        if trimmed_part is not None and trimmed_part.numel() > 0:
+                            await emit_opus_frames(sess.out_q, opus_enc, trimmed_part, sr, seq_ref, is_final=True, t0=session_t0)
                         else:
                             await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
 

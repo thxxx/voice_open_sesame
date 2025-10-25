@@ -399,7 +399,7 @@ class ChatterboxMultilingualTTS:
                     # >>> 전체 재디코딩 유지 <<<
                     speech_tokens = drop_invalid_tokens(torch.cat(audio_tokens, -1)[0]).to(self.device)
                     asyncio.create_task(run_decoder(speech_tokens, self.conds.gen))
-        
+                
                 if buf["type"] == "eos":
                     print(f"[LM {time.time() - st}]")
                     # eos는 producer가 넣어주는 게 흐름이 깔끔
