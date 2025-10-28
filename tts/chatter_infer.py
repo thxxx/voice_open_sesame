@@ -21,7 +21,6 @@ import struct
 MAGIC = b'\xA1\x51'
 CHUNK_SIZE = 28
 
-
 def pack_frame(seq, ts_usec, payload: bytes, is_final=False):
     flags = 1 if is_final else 0
     header = MAGIC + struct.pack('<BBIQI', flags, 0, seq, ts_usec, len(payload))
@@ -73,7 +72,7 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        TRIM = 1200
+        TRIM = 2400
         OVERLAP = int(0.02 * sr)
 
         sess.tts_buffer_sr = sr
@@ -274,7 +273,7 @@ async def chatter_streamer(sess: Session):
                                 await asyncio.sleep(0)
                                 continue
 
-                            print("WAV : ", wav[:, prev_audio_end_at:].shape)
+                            # print("WAV : ", wav[:, prev_audio_end_at:].shape)
                             if total_audio_length < TRIM + OVERLAP + int(sr*0.8):
                                 new_part = wav[:, prev_audio_end_at:]
                                 trimmed_part = None
@@ -305,7 +304,7 @@ async def chatter_streamer(sess: Session):
                             allaudios = torch.cat([allaudios, out_chunk], dim=-1)
                             if start_sending_at == 0:
                                 start_sending_at = time.time()
-                            print(f"[TTS {(total_audio_length-prev_audio_end_at)/24000:.3f}] - takes {time.time() - start_time:.3f}")
+                            # print(f"[TTS {(total_audio_length-prev_audio_end_at)/24000:.3f}] - takes {time.time() - start_time:.3f}")
                             total_audio_seconds += (total_audio_length-prev_audio_end_at)/24000
 
                             
@@ -325,7 +324,7 @@ async def chatter_streamer(sess: Session):
 
                         wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
                         print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
-                        torchaudio.save("test2.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
+                        # torchaudio.save("test2.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
 
                         taken = time.time() - start_sending_at
                         remaining_until_audio_end = total_audio_seconds - taken + 1
