@@ -19,7 +19,7 @@ import numpy as np
 import struct
 
 MAGIC = b'\xA1\x51'
-CHUNK_SIZE = 28
+CHUNK_SIZE = 32
 
 def pack_frame(seq, ts_usec, payload: bytes, is_final=False):
     flags = 1 if is_final else 0
@@ -72,8 +72,9 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        TRIM = 2400
-        OVERLAP = int(0.02 * sr)
+        TRIM = 3600
+        # OVERLAP = int(0.01 * sr)
+        OVERLAP = int(0.05 * sr)
 
         sess.tts_buffer_sr = sr
         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -273,27 +274,31 @@ async def chatter_streamer(sess: Session):
                                 await asyncio.sleep(0)
                                 continue
 
-                            # print("WAV : ", wav[:, prev_audio_end_at:].shape)
                             if total_audio_length < TRIM + OVERLAP + int(sr*0.8):
                                 new_part = wav[:, prev_audio_end_at:]
                                 trimmed_part = None
                             else:
                                 new_part = wav[:, prev_audio_end_at:-TRIM]
                                 trimmed_part = wav[:, -TRIM:]
-    
-                            if last_tail_audio is None: # First audio chunk
-                                out_chunk = new_part
-                            else:
-                                L = min(OVERLAP, new_part.shape[-1], last_tail_audio.shape[-1])
-                                if L > 0:
-                                    fade_in  = torch.linspace(0, 1, L, device=wav.device, dtype=wav.dtype)
-                                    fade_out = 1.0 - fade_in
-    
-                                    overlapped_part = last_tail_audio[:, -L:] * fade_out + new_part[:, :L] * fade_in
-                                    audio_part = new_part[:, L:]
-                                    out_chunk = torch.cat([overlapped_part, audio_part], dim=-1)
-                                else:
-                                    out_chunk = new_part[:, :]
+                            print("new_part : ", new_part.shape)
+
+                            # fade_out_ms = 50
+                            # fade_samples = int(24000 * fade_out_ms / 1000)
+                            # fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
+                            # new_part[:, -fade_samples:] *= fade_curve
+
+
+                            fade_out_ms = 50
+                            fade_samples = int(24000 * fade_out_ms / 1000)
+                            new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
+                            fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
+                            fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples), device=new_part.device)
+                            
+                            # broadcast-safe 연산으로 변경
+                            new_part[:, -fade_samples:] = new_part[:, -fade_samples:] * fade_curve
+                            new_part[:, :fade_samples] = new_part[:, :fade_samples] * fade_curve_up
+
+                            out_chunk = new_part
                             
                             await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
                             
@@ -304,7 +309,6 @@ async def chatter_streamer(sess: Session):
                             allaudios = torch.cat([allaudios, out_chunk], dim=-1)
                             if start_sending_at == 0:
                                 start_sending_at = time.time()
-                            # print(f"[TTS {(total_audio_length-prev_audio_end_at)/24000:.3f}] - takes {time.time() - start_time:.3f}")
                             total_audio_seconds += (total_audio_length-prev_audio_end_at)/24000
 
                             
@@ -317,14 +321,14 @@ async def chatter_streamer(sess: Session):
                             break
                             
                         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
-                        if trimmed_part is not None and trimmed_part.numel() > 0:
-                            await emit_opus_frames(sess.out_q, opus_enc, trimmed_part, sr, seq_ref, is_final=True, t0=session_t0)
-                        else:
-                            await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
+                        # if trimmed_part is not None and trimmed_part.numel() > 0:
+                        #     await emit_opus_frames(sess.out_q, opus_enc, trimmed_part, sr, seq_ref, is_final=True, t0=session_t0)
+                        # else:
+                        await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
 
                         wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
                         print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
-                        # torchaudio.save("test2.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
+                        torchaudio.save("test_audio_save.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
 
                         taken = time.time() - start_sending_at
                         remaining_until_audio_end = total_audio_seconds - taken + 1

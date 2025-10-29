@@ -399,7 +399,7 @@ async def _transcribe_tts_buffer(sess: Session) -> str:
     sr  = getattr(sess, "tts_buffer_sr", 24000)
 
     print("buf size : ", buf.size)
-    if buf.size < 500:
+    if buf.size < 4800:
         return ""
     # float32 [-1,1] → int16 bytes
     pcm_i16 = np.clip(buf, -1.0, 1.0)
