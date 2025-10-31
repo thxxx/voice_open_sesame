@@ -72,9 +72,9 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        TRIM = 3200
+        TRIM = 3600
         # OVERLAP = int(0.01 * sr)
-        OVERLAP = int(0.03 * sr)
+        OVERLAP = int(0.04 * sr)
 
         sess.tts_buffer_sr = sr
         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -288,16 +288,17 @@ async def chatter_streamer(sess: Session):
                             # new_part[:, -fade_samples:] *= fade_curve
 
 
-                            fade_out_ms = 30
+                            fade_out_ms = 25
                             fade_samples = int(24000 * fade_out_ms / 1000)
-                            new_part = wav[:, max(prev_audio_end_at, 0):-TRIM].clone()  # 반드시 clone() 붙이기
-                            # new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
+                            fade_samples_ip = int(24000 * 20 / 1000)
+                            # new_part = wav[:, max(prev_audio_end_at, 0):-TRIM].clone()  # 반드시 clone() 붙이기
+                            new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
                             fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
-                            # fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples), device=new_part.device)
+                            fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples_ip), device=new_part.device)
                             
                             # broadcast-safe 연산으로 변경
                             new_part[:, -fade_samples:] = new_part[:, -fade_samples:] * fade_curve
-                            # new_part[:, :fade_samples] = new_part[:, :fade_samples] * fade_curve_up
+                            new_part[:, :fade_samples_ip] = new_part[:, :fade_samples_ip] * fade_curve_up
 
                             out_chunk = new_part
                             
