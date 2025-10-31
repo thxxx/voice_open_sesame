@@ -72,9 +72,9 @@ async def chatter_streamer(sess: Session):
     try:
         loop = asyncio.get_running_loop()
         sr = 24000
-        TRIM = 3600
+        TRIM = 3200
         # OVERLAP = int(0.01 * sr)
-        OVERLAP = int(0.05 * sr)
+        OVERLAP = int(0.03 * sr)
 
         sess.tts_buffer_sr = sr
         sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -280,7 +280,7 @@ async def chatter_streamer(sess: Session):
                             else:
                                 new_part = wav[:, prev_audio_end_at:-TRIM]
                                 trimmed_part = wav[:, -TRIM:]
-                            print("new_part : ", new_part.shape)
+                            # print("new_part : ", new_part.shape)
 
                             # fade_out_ms = 50
                             # fade_samples = int(24000 * fade_out_ms / 1000)
@@ -288,21 +288,22 @@ async def chatter_streamer(sess: Session):
                             # new_part[:, -fade_samples:] *= fade_curve
 
 
-                            fade_out_ms = 50
+                            fade_out_ms = 30
                             fade_samples = int(24000 * fade_out_ms / 1000)
-                            new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
+                            new_part = wav[:, max(prev_audio_end_at, 0):-TRIM].clone()  # 반드시 clone() 붙이기
+                            # new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
                             fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
-                            fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples), device=new_part.device)
+                            # fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples), device=new_part.device)
                             
                             # broadcast-safe 연산으로 변경
                             new_part[:, -fade_samples:] = new_part[:, -fade_samples:] * fade_curve
-                            new_part[:, :fade_samples] = new_part[:, :fade_samples] * fade_curve_up
+                            # new_part[:, :fade_samples] = new_part[:, :fade_samples] * fade_curve_up
 
                             out_chunk = new_part
                             
                             await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
                             
-                            last_tail_audio = wav[:, total_audio_length-TRIM-OVERLAP : total_audio_length-TRIM]
+                            # last_tail_audio = wav[:, total_audio_length-TRIM-OVERLAP : total_audio_length-TRIM]
                             
                             prev_audio_end_at = total_audio_length - TRIM
                             
@@ -310,7 +311,6 @@ async def chatter_streamer(sess: Session):
                             if start_sending_at == 0:
                                 start_sending_at = time.time()
                             total_audio_seconds += (total_audio_length-prev_audio_end_at)/24000
-
                             
                             await asyncio.sleep(0)
                         except Exception as e:
@@ -326,9 +326,9 @@ async def chatter_streamer(sess: Session):
                         # else:
                         await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
 
-                        wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
-                        print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
-                        torchaudio.save("test_audio_save.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
+                        # wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
+                        # print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
+                        # torchaudio.save("test_audio_save.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
 
                         taken = time.time() - start_sending_at
                         remaining_until_audio_end = total_audio_seconds - taken + 1
