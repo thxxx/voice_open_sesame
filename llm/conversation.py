@@ -113,8 +113,8 @@ async def run_answer_async(sess: Session) -> str:
 
     def run_blocking():
         return chat_reply(
-            prev_scripts=sess.transcripts[-6:],
-            prev_answers=sess.outputs[-6:],
+            prev_scripts=sess.transcripts[-10:],
+            prev_answers=sess.outputs[-10:],
             input_sentence=sess.current_transcript,
             language=sess.language,
             onToken=on_token,           # executor 스레드에서 호출될 가능성 높음

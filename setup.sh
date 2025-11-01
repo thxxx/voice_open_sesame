@@ -1,5 +1,7 @@
 apt-get update
 apt-get install -y ffmpeg
+apt-get install -y portaudio19-dev python3-dev
+
 pip install --upgrade pip
 pip install flask flask-cors --ignore-installed
 pip install openai fastapi uvicorn[standard] orjson
@@ -13,6 +15,7 @@ git config user.name thxxx
 pip install torchaudio numpy lhotse huggingface_hub safetensors tensorboard vocos opuslib
 pip install cn2an inflect s3tokenizer diffusers conformer pykakasi resemble-perth
 pip install pkuseg
+pip install onnx onnxruntime seaborn pyaudio
 
 # Tokenization
 pip install jieba piper_phonemize pypinyin

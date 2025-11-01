@@ -25,12 +25,10 @@ from llm.conversation import conversation_worker, answer_greeting
 
 from tts.chatter_infer import chatter_streamer, cancel_silence_nudge
 from utils.opus import ensure_opus_decoder, decode_opus_float, parse_frame
+from third.smart_turn.inference import predict_endpoint
 
 INPUT_SAMPLE_RATE = 24000
 WHISPER_SR = 16000
-END_WORDS = [".", "!", "?", "。", "！", "？"]
-
-filler_audios = []
 
 def jdumps(o):
     return json.dumps(o).decode()
@@ -49,8 +47,6 @@ sessions: Dict[int, Session] = {}  # map by id(ws)
 @app.on_event("startup")
 def init_models():
     """Initialize global runtime switches and preload optional assets."""
-    global filler_audios
-
     # Multiprocessing / env knobs must be set ASAP
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -62,12 +58,6 @@ def init_models():
     except RuntimeError:
         # Already set by another import path
         pass
-
-    filler_audios_path = []
-    for p in filler_audios_path:
-        audiod, sr = librosa.load(p, sr=24000, mono=True)
-        audiod = torch.tensor(audiod)
-        filler_audios.append(pcm16_b64(audiod))
 
     # If you need to warm up any LLM backends, do it here (lazy by default)
     # global LLM
@@ -230,7 +220,26 @@ async def ws_endpoint(ws: WebSocket):
                             sess.buf_count += 1
 
                             if vad_event == "end" and sess.transcript != "": # immediately stop
+                                # check by using smart-turn-detection-v3 from pipecat
                                 print("[Voice End] - ", sess.transcript)
+                                audio = sess.audios[:WHISPER_SR * 8]
+                                turn_result = predict_endpoint(audio)
+                                
+                                print("Turn result : ", turn_result, "\n")
+                                if turn_result['prediction'] != 1: # 1 is Complete
+                                    # We can ignore when vad evenet is end but smart turn detection is not.
+                                    # But what if it is wrong?
+                                    # Set timer and trigger turn end after 1 second.
+                                    if getattr(sess, "pending_turn_task", None):
+                                        sess.pending_turn_task.cancel()
+                                        sess.pending_turn_task = None
+                            
+                                    # 2) 새로 1초짜리 타이머 걸기
+                                    sess.pending_turn_task = asyncio.create_task(
+                                        delayed_force_turn_end(sess, delay=3.0)
+                                    )
+                                    continue
+                                
                                 await sess.out_q.put(
                                     jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True})
                                 )
@@ -488,3 +497,23 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
         print("Error ", e)
     
     print("[interrupt_output] took ", time.time() - st)
+
+async def delayed_force_turn_end(sess: Session, delay: float = 1.0):
+    try:
+        await asyncio.sleep(delay)
+        if sess.current_audio_state == "start":
+            return
+        print('1초 동안 말을 안해서 그냥 끊어버림')
+
+        if sess.transcript.strip():
+            await sess.out_q.put(
+                jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True})
+            )
+            sess.answer_q.put_nowait(sess.transcript.strip())
+            sess.transcript = ""
+
+        sess.current_audio_state = "none"
+        sess.audios = np.empty(0, dtype=np.float32)
+        sess.end_scripting_time = time.time() % 1000
+    finally:
+        sess.pending_turn_task = None

@@ -15,7 +15,7 @@ class Session:
     running: bool = True
     
     def __init__(self, input_sr: int, input_channels: int):
-        self.answer_q = asyncio.Queue(maxsize=5)   # 역압: 최신 2개까지만 허용
+        self.answer_q = asyncio.Queue(maxsize=5)
         self.conversation_task = None
         self.prompt = ''
         self.name = 'hojin'
@@ -23,6 +23,7 @@ class Session:
         self.my_memory = ''
         self.current_time = ""
         self.bufs = []
+        self.pending_turn_task = None
 
         self.tts_buffer_sr = 24000
         self.tts_pcm_buffer = np.empty(0, dtype=np.float32)
@@ -36,7 +37,7 @@ class Session:
         self.input_sample_rate = input_sr
         self.input_channels = input_channels
         self.last_interrupt_ts: float = 0.0
-        self.tts_stop_event = threading.Event()  # TTS 생성 스레드 중단용
+        self.tts_stop_event = threading.Event()
 
         self.current_transcript: str = ''
         self.transcripts: List[str] = []
@@ -54,7 +55,7 @@ class Session:
         self.tts_in_q: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
 
         # ---- 전역/세션 초기화 시 ----
-        self.stt_in_q: asyncio.Queue[bytes]  = asyncio.Queue(maxsize=2)   # 최신 청크 위주
+        self.stt_in_q: asyncio.Queue[bytes]  = asyncio.Queue(maxsize=2)
         self.stt_out_q: asyncio.Queue[dict]  = asyncio.Queue(maxsize=32)  # {"type": "delta"/"final", "text": ...}
 
         self.tts_buf: list[str] = []
