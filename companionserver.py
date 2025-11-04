@@ -227,6 +227,8 @@ async def ws_endpoint(ws: WebSocket):
                                 
                                 print("Turn result : ", turn_result, "\n")
                                 if turn_result['prediction'] != 1: # 1 is Complete
+                                    score = turn_result['probability']
+                                    delay = 3.0 * (1 - score)
                                     # We can ignore when vad evenet is end but smart turn detection is not.
                                     # But what if it is wrong?
                                     # Set timer and trigger turn end after 1 second.
@@ -236,7 +238,7 @@ async def ws_endpoint(ws: WebSocket):
                             
                                     # 2) 새로 1초짜리 타이머 걸기
                                     sess.pending_turn_task = asyncio.create_task(
-                                        delayed_force_turn_end(sess, delay=3.0)
+                                        delayed_force_turn_end(sess, delay=delay)
                                     )
                                     continue
                                 

@@ -3,8 +3,13 @@ from app.session import Session
 from utils.utils import dprint, lprint
 import re 
 import asyncio
-from llm.openai import chat_reply, chat_greeting
+from utils.constants import LLM_MODEL
+if LLM_MODEL == "local":
+    from llm.ollama import chat_reply, chat_greeting
+else:
+    from llm.openai import chat_reply, chat_greeting
 import orjson as json
+
 def jdumps(o): return json.dumps(o).decode()
 
 SILENCE_PATTERN = re.compile(r"<\s*silence\s+(\d+(?:\.\d+)?)\s*>", re.IGNORECASE)
@@ -122,9 +127,11 @@ async def run_answer_async(sess: Session) -> str:
             current_time=sess.current_time
         )
 
+    # st = time.time()
     output = await loop.run_in_executor(None, run_blocking)
     answer_text = output.get("text", "") or ""
-
+    # print(f"[{time.time() - st}s] - {answer_text}")
+    
     tail = answer_text[sent_chars:]
     if tail:
         pieces = split_by_silence_markers(tail)

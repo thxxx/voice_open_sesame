@@ -1,4 +1,6 @@
 COMPANION_NAME = "Maya"
+LLM_MODEL = "local" # "api" or "local"
+OPENAI_KEY = ""
 
 DEFAULT_VOICE_PATH = "./audio_samples/output_full.wav"
 DEFAULT_KOREAN_VOICE_PATH = "./audio_samples/shogun.wav"

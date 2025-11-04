@@ -27,3 +27,7 @@ pip uninstall -y torchvision
 python -m pip install --no-cache-dir "numpy<2.0"
 
 # uvicorn companionserver:app --host 0.0.0.0 --port 5000
+
+curl -fsSL https://ollama.com/install.sh | sh
+# ollama serve
+# ollama run gpt-oss:20b

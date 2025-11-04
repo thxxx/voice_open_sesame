@@ -2,27 +2,20 @@ import os
 from typing import Callable
 from openai import OpenAI
 import time
-from utils.constants import COMPANION_NAME, LANGUAGE_CODE_REVERSED, OPENAI_KEY
+from utils.constants import COMPANION_NAME, LANGUAGE_CODE_REVERSED
 import re
 import json
-
-if OPENAI_KEY == "":
-    OPENAI_KEY = os.environ.get("OPENAI_KEY")
-
-client = OpenAI(api_key=OPENAI_KEY)
+import requests
+import json
+import time
 
 def chat_reply(prev_scripts:str, prev_answers:str, input_sentence:str, language:str = "English", onToken:Callable[[str], None] = None, prompt:str = '', name:str = 'hojin', current_time:str = ''):
-    conv = f"""
-"""
+    conv = f""""""
     for i in range(len(prev_scripts)):
         conv += f"User: {prev_scripts[i]},"
         conv += f"{COMPANION_NAME}: {prev_answers[i]},"
 
-    iprompt = ''
-    if prompt != '':
-        iprompt = prompt
-    else:
-        iprompt = f"""
+    iprompt = f"""
 You use {LANGUAGE_CODE_REVERSED[language]} language. User's name is {name}.
 Current Time : {current_time}
 
@@ -77,47 +70,42 @@ Example Output
 ---
 """
 
-    response = client.chat.completions.create(
-        model='gpt-4.1-mini',
-        messages=[
-            {"role": "system", "content": f"""{iprompt}"""},
-            {"role": "user", "content": f"""
-previous conversations:
+    OLLAMA_URL = "http://localhost:11434/api/generate"
+
+    payload = {
+        "model": "gpt-oss:20b",
+        "prompt": f"""System: {iprompt}\n\nUser: previous conversations:
 {conv}
 ---
-User: {input_sentence}
-"""}
-        ],
-        temperature=1.2,
-        user="20251019",
-        prompt_cache_key="20251019",
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+User: {input_sentence}""",
+        "stream": True
+    }
 
     sent = ''
-
-    pt = 0
-    pt_cached = 0
-    ct = 0
-
-    for chunk in response:
-        if chunk.usage and chunk.usage is not None:
-            u = chunk.usage;
-            pt += u.prompt_tokens
-            pt_cached += u.prompt_tokens_details.cached_tokens
-            ct += u.completion_tokens
-        else:
-            if chunk.choices[0].delta.content != '' and chunk.choices[0].delta.content is not None:
-                onToken(chunk.choices[0].delta.content)
-                sent += chunk.choices[0].delta.content
-
+    with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line.decode("utf-8"))
+            if "response" in chunk:
+                sent += chunk["response"]
+                onToken(chunk['response'])
+            if chunk.get("done"):
+                return {
+                    "text": sent,
+                    "prompt_tokens": 0,
+                    "prompt_tokens_cached": 0,
+                    "completion_tokens": 0
+                }
+    
     return {
         "text": sent,
-        "prompt_tokens": pt,
-        "prompt_tokens_cached": pt_cached,
-        "completion_tokens": ct
+        "prompt_tokens": 0,
+        "prompt_tokens_cached": 0,
+        "completion_tokens": 0
     }
+
 
 def chat_greeting(language:str = "English", name:str = "hojin", current_time: str = ''):
     iprompt = f"""
@@ -141,42 +129,36 @@ For example:
 
 """
 
-    response = client.chat.completions.create(
-        model='gpt-4.1-mini',
-        messages=[
-            {"role": "system", "content": f"""{iprompt}"""},
-            {"role": "user", "content": f"""
-Call is started! Greet the user lightly.
-"""}
-        ],
-        temperature=1.0,
-        user="20251019",
-        prompt_cache_key="20251019",
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+    OLLAMA_URL = "http://localhost:11434/api/generate"
+
+    payload = {
+        "model": "gpt-oss:20b",
+        "prompt": f"""System: {iprompt}\n\nCall is started! Greet the user lightly.""",
+        "stream": True
+    }
 
     sent = ''
-
-    pt = 0
-    pt_cached = 0
-    ct = 0
-
-    for chunk in response:
-        if chunk.usage and chunk.usage is not None:
-            u = chunk.usage;
-            pt += u.prompt_tokens
-            pt_cached += u.prompt_tokens_details.cached_tokens
-            ct += u.completion_tokens
-        else:
-            if chunk.choices[0].delta.content != '' and chunk.choices[0].delta.content is not None:
-                sent += chunk.choices[0].delta.content
-
+    with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line.decode("utf-8"))
+            if "response" in chunk:
+                sent += chunk["response"]
+            if chunk.get("done"):
+                return {
+                    "text": sent,
+                    "prompt_tokens": 0,
+                    "prompt_tokens_cached": 0,
+                    "completion_tokens": 0
+                }
+    
     return {
         "text": sent,
-        "prompt_tokens": pt,
-        "prompt_tokens_cached": pt_cached,
-        "completion_tokens": ct
+        "prompt_tokens": 0,
+        "prompt_tokens_cached": 0,
+        "completion_tokens": 0
     }
 
 
@@ -249,14 +231,8 @@ These are so boring.
 
 ---
 """
-
-    response = client.chat.completions.create(
-        model='gpt-4.1-mini',
-        messages=[
-            {"role": "system", "content": f"""
-{iprompt}
-"""},
-            {"role": "user", "content": f"""
+        
+    user_prompt = f"""
 previous conversations: {conv}
 ---
 
@@ -289,35 +265,38 @@ JSON schema (no deviations):
 {"class": "<one of the eight>", "text": "<string, empty if class is wait>"}
 
 Return only the JSON object, nothing else.
-"""}
-        ],
-        temperature=1.0,
-        user="k2e-chorok-v1-hojinkhj6051230808",
-        prompt_cache_key="k2e-chorok-v1-hojinkhj6051230808",
-        stream=True,
-        stream_options={"include_usage": True},
-    )
+"""
+
+    OLLAMA_URL = "http://localhost:11434/api/generate"
+
+    payload = {
+        "model": "gpt-oss:20b",
+        "prompt": f"""System: {iprompt}\n\n{user_prompt}""",
+        "stream": True
+    }
 
     sent = ''
-    pt = 0
-    pt_cached = 0
-    ct = 0
-
-    for chunk in response:
-        if chunk.usage and chunk.usage is not None:
-            u = chunk.usage;
-            pt += u.prompt_tokens
-            pt_cached += u.prompt_tokens_details.cached_tokens
-            ct += u.completion_tokens
-        else:
-            if chunk.choices[0].delta.content != '' and chunk.choices[0].delta.content is not None:
-                sent += chunk.choices[0].delta.content
-
+    with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=300) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line.decode("utf-8"))
+            if "response" in chunk:
+                sent += chunk["response"]
+            if chunk.get("done"):
+                return {
+                    "text": extract_companion_followup(sent),
+                    "prompt_tokens": 0,
+                    "prompt_tokens_cached": 0,
+                    "completion_tokens": 0
+                }
+    
     return {
         "text": extract_companion_followup(sent),
-        "prompt_tokens": pt,
-        "prompt_tokens_cached": pt_cached,
-        "completion_tokens": ct
+        "prompt_tokens": 0,
+        "prompt_tokens_cached": 0,
+        "completion_tokens": 0
     }
 
 ALLOWED_CLASSES = {
