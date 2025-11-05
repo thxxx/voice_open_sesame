@@ -155,18 +155,27 @@ async def chatter_streamer(sess: Session):
                     if inspect.isasyncgen(agen):
                         async for evt in agen:
                             if stop_evt.is_set():
+                                print("\n\nstop event\n\n")
                                 break
-                            audio = evt.get("audio")
-                            loop.call_soon_threadsafe(out_q.put_nowait, ("chunk", audio))
+                            audio = evt.get("audio", None)
+                            if audio is None and evt["type"] == "eos":
+                                loop.call_soon_threadsafe(out_q.put_nowait, ("chunk_eos", audio))
+                            else:
+                                loop.call_soon_threadsafe(out_q.put_nowait, ("chunk", audio))
                     else:
                         for evt in agen:
                             if stop_evt.is_set():
+                                print("\n\nstop event\n\n")
                                 break
-                            audio = evt.get("audio")
-                            loop.call_soon_threadsafe(out_q.put_nowait, ("chunk", audio))
-
+                            audio = evt.get("audio", None)
+                            if audio is None and evt["type"] == "eos":
+                                loop.call_soon_threadsafe(out_q.put_nowait, ("chunk_eos", audio))
+                            else:
+                                loop.call_soon_threadsafe(out_q.put_nowait, ("chunk", audio))
+                    print("Come here")
                     loop.call_soon_threadsafe(out_q.put_nowait, ("eos", None))
                 except Exception as e:
+                    print("Error as e ", e)
                     loop.call_soon_threadsafe(out_q.put_nowait, ("error", str(e)))
 
             def thread_target():
@@ -181,6 +190,7 @@ async def chatter_streamer(sess: Session):
                 if not text_chunk or sess.tts_stop_event.is_set():
                     print("[chatter_streamer] TTS stop event is set", text_chunk)
                     continue
+                
                 is_last = True
                 if "<cont>" in text_chunk:
                     is_last=False
@@ -219,7 +229,6 @@ async def chatter_streamer(sess: Session):
                     if stripped.startswith(s):
                         matched = s
                         break
-
                 if matched is not None:
                     token = matched.lower().strip().replace(".", "").replace(",", "")
                     idx = random.choice([0, 1, 2])
@@ -234,10 +243,6 @@ async def chatter_streamer(sess: Session):
                         asyncio.create_task(emit_opus_frames(sess.out_q, opus_enc, wav, sr, seq_ref, is_final=False, t0=session_t0))
                     except Exception as e:
                         print(f"[starter] failed to load '{sample_path}': {e}")
-
-
-                # === TTS producer (thread) start (send sample wav and simultaneous) ===
-                if matched is not None:
                     text_chunk = re.sub(matched, '', text_chunk[:10]) + text_chunk[10:]
                 
                 prev_audio_end_at = 0
@@ -251,15 +256,18 @@ async def chatter_streamer(sess: Session):
                 allaudios = torch.zeros(1, 0).to('cuda')
                 ii=0
                 while True:
-                    if sess.tts_stop_event.is_set():
-                        try:
-                            while True:
-                                _ = tts_chunk_q.get_nowait()
-                                tts_chunk_q.task_done()
-                        except asyncio.QueueEmpty:
-                            pass
-                        break
-                    evt_type, payload = await tts_chunk_q.get()
+                    try:
+                        if sess.tts_stop_event.is_set():
+                            try:
+                                while True:
+                                    _ = tts_chunk_q.get_nowait()
+                                    tts_chunk_q.task_done()
+                            except asyncio.QueueEmpty:
+                                pass
+                            break
+                        evt_type, payload = await tts_chunk_q.get()
+                    except Exception as e:
+                        print("Event error ", e)
 
                     if evt_type == "chunk":
                         ii += 1
@@ -287,24 +295,20 @@ async def chatter_streamer(sess: Session):
                             # fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
                             # new_part[:, -fade_samples:] *= fade_curve
 
-
-                            fade_out_ms = 25
+                            fade_out_ms = 20
                             fade_samples = int(24000 * fade_out_ms / 1000)
-                            fade_samples_ip = int(24000 * 20 / 1000)
+                            fade_samples_ip = int(24000 * 15 / 1000)
                             # new_part = wav[:, max(prev_audio_end_at, 0):-TRIM].clone()  # 반드시 clone() 붙이기
                             new_part = wav[:, max(prev_audio_end_at-fade_samples, 0):-TRIM].clone()  # 반드시 clone() 붙이기
                             fade_curve = torch.tensor(np.linspace(1, 0, fade_samples), device=new_part.device)
                             fade_curve_up = torch.tensor(np.linspace(0, 1, fade_samples_ip), device=new_part.device)
                             
-                            # broadcast-safe 연산으로 변경
                             new_part[:, -fade_samples:] = new_part[:, -fade_samples:] * fade_curve
                             new_part[:, :fade_samples_ip] = new_part[:, :fade_samples_ip] * fade_curve_up
 
                             out_chunk = new_part
-                            
+
                             await emit_opus_frames(sess.out_q, opus_enc, out_chunk, sr, seq_ref, is_final=False, t0=session_t0)
-                            
-                            # last_tail_audio = wav[:, total_audio_length-TRIM-OVERLAP : total_audio_length-TRIM]
                             
                             prev_audio_end_at = total_audio_length - TRIM
                             
@@ -317,19 +321,14 @@ async def chatter_streamer(sess: Session):
                         except Exception as e:
                             print("Erorr : ", e)
 
-                    elif evt_type == "eos":
+                    if evt_type == "eos":
+                        print
                         if not is_last:
                             break
-                            
-                        sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
-                        # if trimmed_part is not None and trimmed_part.numel() > 0:
-                        #     await emit_opus_frames(sess.out_q, opus_enc, trimmed_part, sr, seq_ref, is_final=True, t0=session_t0)
-                        # else:
-                        await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
 
-                        # wav = allaudios.detach().cpu().contiguous().clamp_(-1.0, 1.0)
-                        # print("allaudios.shape : ", allaudios.shape, allaudios.dtype, wav.shape)
-                        # torchaudio.save("test_audio_save.wav", wav, 24000, encoding="PCM_S", bits_per_sample=16)
+                        total_audio_seconds = sess.tts_pcm_buffer.shape[-1]/24000
+                        sess.tts_pcm_buffer = np.empty(0, dtype=np.float32)
+                        await emit_opus_frames(sess.out_q, opus_enc, None, sr, seq_ref, is_final=True, t0=session_t0)
 
                         taken = time.time() - start_sending_at
                         remaining_until_audio_end = total_audio_seconds - taken + 1
@@ -358,8 +357,8 @@ async def proactive_say(sess: Session):
 
     def run_blocking():
         return chat_followup(
-            prev_scripts=sess.transcripts[-6:],
-            prev_answers=sess.outputs[-6:],
+            prev_scripts=sess.transcripts[-10:],
+            prev_answers=sess.outputs[-10:],
             language=sess.language,
             name=sess.name,
             current_time=sess.current_time,
@@ -368,6 +367,7 @@ async def proactive_say(sess: Session):
     try:
         output = await loop.run_in_executor(None, run_blocking)
         tuples = (output.get("text", "") or "")
+        print("output : ", tuples, "\n\n")
         if tuples[0] is None or tuples[0] == '':
             return
         if tuples[1] == 'wait':
@@ -379,7 +379,12 @@ async def proactive_say(sess: Session):
 
     except Exception as e:
         print("NUDGE ERROR : ", e)
-    
+
+        
+    sess.out_q.put_nowait(jdumps({
+        "type": "tts_audio_meta",
+        "format": "opus",
+    }))
     loop.call_soon_threadsafe(sess.tts_in_q.put_nowait, text)
     loop.call_soon_threadsafe(
         sess.out_q.put_nowait,

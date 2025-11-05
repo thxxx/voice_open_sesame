@@ -5,6 +5,7 @@ import time
 from utils.constants import COMPANION_NAME, LANGUAGE_CODE_REVERSED, OPENAI_KEY
 import re
 import json
+from llm.utils import ALLOWED_CLASSES, extract_companion_followup
 
 if OPENAI_KEY == "":
     OPENAI_KEY = os.environ.get("OPENAI_KEY")
@@ -319,33 +320,3 @@ Return only the JSON object, nothing else.
         "prompt_tokens_cached": pt_cached,
         "completion_tokens": ct
     }
-
-ALLOWED_CLASSES = {
-    "continuation",
-    "observation",
-    "reflection",
-    "filler",
-    "selfCorrection",
-    "softQuestion",
-    "ambientMood",
-    "wait",
-}
-
-def extract_companion_followup(model_output):
-    print("model_output : ", model_output)
-    try:
-        data = json.loads(model_output)
-        cls = data.get("class")
-        txt = data.get("text", "")
-
-        if cls == "wait":
-            return (None, "wait")
-
-        if isinstance(txt, str) and txt.strip():
-            return (txt.strip(), cls)
-        else:
-            return (None, cls)
-
-    except Exception as e:
-        print("Parsing error : ", e)
-        return (None, None)

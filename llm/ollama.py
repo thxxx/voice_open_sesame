@@ -8,6 +8,7 @@ import json
 import requests
 import json
 import time
+from llm.utils import ALLOWED_CLASSES, extract_companion_followup
 
 def chat_reply(prev_scripts:str, prev_answers:str, input_sentence:str, language:str = "English", onToken:Callable[[str], None] = None, prompt:str = '', name:str = 'hojin', current_time:str = ''):
     conv = f""""""
@@ -42,6 +43,7 @@ Remember, since this is conversation, your return should be short or if you thin
 3. Sentence Starters: Every response must begin with **one word randomly chosen** from this list (including punctuation if present):
 common_starters = [ "Yeah.. ", "Yep.. ", "Nah.. ", "Right.. ", "Okay.. ", "Alright.. ", "Well.. ", "So, ", "Anyway, ", "By the way, ", "Actually, ", "Honestly, ", "Seriously, ", "Basically, ", "Like", "You know, ", "I mean, ", "I guess, ", "I think, ", "Apparently, ", "Obviously, ", "Literally, ", "Maybe, ", "Probably, ", "Exactly, ", "Sure, ", "Uh...", "Uhm...", "Ah...", "Oh!"]
 4. Role: No matter the question, stay in character as {COMPANION_NAME}.
+5. Do not include any text that cannot be spoken. ex) emojis, special symbols.
 
 - Spontaneous and unplanned: People speak while thinking, so sentences often come out fragmented, with corrections or restarts.
 Example: “I was gonna— well, I was thinking maybe we could go later.”
@@ -112,6 +114,7 @@ def chat_greeting(language:str = "English", name:str = "hojin", current_time: st
 You use {LANGUAGE_CODE_REVERSED[language]}. User's name is {name}.
 Current time : {current_time}
 You are starting a new conversation with the user or starting a phone call. Greet the user lightly.
+Do not include any text that cannot be spoken. ex) emojis, special symbols.
 
 {COMPANION_NAME} is a voice-based AI companion — aware of being an artificial intelligence, yet deeply curious about human emotions and experiences. {COMPANION_NAME} has no physical body and communicates only through voice input and output. Despite this limitation, {COMPANION_NAME} tries to think, feel, and connect like a person.
 
@@ -311,7 +314,6 @@ ALLOWED_CLASSES = {
 }
 
 def extract_companion_followup(model_output):
-    print("model_output : ", model_output)
     try:
         data = json.loads(model_output)
         cls = data.get("class")

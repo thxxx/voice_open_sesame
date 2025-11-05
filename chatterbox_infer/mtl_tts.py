@@ -255,7 +255,6 @@ class ChatterboxMultilingualTTS:
         cached = self._cond_cache.get(key)
 
         if cached is None:
-            # --- 로딩/리샘플 (float32 유지) ---
             if isinstance(wav_fpath, str):
                 s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR, mono=True, dtype=np.float32)
                 ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR, res_type="soxr_qq")
@@ -280,7 +279,6 @@ class ChatterboxMultilingualTTS:
             cached = {"ve": ve_embed, "t3_prompt": t3_cond_prompt_tokens, "s3ref": s3gen_ref_dict}
             self._cond_cache[key] = cached
 
-        # 여기서는 emotion만 갱신 (재계산 없음)
         t3_cond = T3Cond(
             speaker_emb=cached["ve"],
             cond_prompt_speech_tokens=cached["t3_prompt"],
@@ -400,24 +398,20 @@ class ChatterboxMultilingualTTS:
         decode_tasks = set()
 
         async def run_decoder(speech_tokens, ref_dict):
-            # st = time.time()
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
                 ref_dict=ref_dict,
             )
-            # print(f"[decode {time.time() - st:.3f}] ", speech_tokens.shape)
-            # yield는 async def 안에서는 불가하므로 큐로 전달
             return {"type": "chunk", "audio": wav}
         
         # 텍스트 토큰 길이에 비례해서 max_new_tokens 결정
         text_len = text_tokens.shape[-1]
 
-        alpha = 4.0          # multiplier (텍스트→오디오 토큰 비율)
-        min_new_tokens = 100 # 너무 짧지 않게
-        max_cap = 600        # 너무 길지 않게
+        alpha = 4.0          
+        min_new_tokens = 100 
+        max_cap = 600        
 
         max_new_tokens = min(max_cap, max(min_new_tokens, int(alpha * text_len)))
-        # print(f"max_new_tokens: {max_new_tokens}, text_len: {text_len}")
 
         with torch.inference_mode():
             response = self.t3.inference_streaming(
@@ -436,25 +430,20 @@ class ChatterboxMultilingualTTS:
                 if buf["type"] == "token":
                     audio_tokens.append(buf["token_id"])
 
-                # chunk_size마다 디코더 태스크 실행
                 if (buf["type"] == "token" and len(audio_tokens) % chunk_size == (chunk_size - 1)) \
                 or (buf["type"] == "eos" and len(audio_tokens) > 0):
                     speech_tokens = torch.cat(audio_tokens, dim=-1)[0]
                     speech_tokens = drop_invalid_tokens(speech_tokens).to(self.device)
 
-                    # 디코더를 백그라운드에서 실행
                     task = asyncio.create_task(run_decoder(speech_tokens, self.conds.gen))
                     decode_tasks.add(task)
 
-                    # 끝난 태스크는 yield
                     done, decode_tasks = await asyncio.wait(
                         decode_tasks, return_when=asyncio.FIRST_COMPLETED
                     )
                     for d in done:
                         yield d.result()
 
-            # 남은 태스크도 모두 마무리
             for t in await asyncio.gather(*decode_tasks):
                 yield t
-
         yield {"type": "eos"}

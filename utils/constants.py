@@ -1,4 +1,4 @@
-COMPANION_NAME = "Maya"
+COMPANION_NAME = "Jennifer"
 LLM_MODEL = "local" # "api" or "local"
 OPENAI_KEY = ""
 
@@ -9,28 +9,27 @@ FOLLOWUP_SILENCE_DELAY = 6.0
 
 LANGUAGE_CODE = {
     "Arabic": "ar",
-    "Danish": "da",
     "German": "de",
     "Greek": "el",
+    "Danish": "da",
     "English": "en",
     "Spanish": "es",
     "Finnish": "fi",
-    "French": "fr",
-    "Hebrew": "he",
     "Hindi": "hi",
+    "Hebrew": "he",
+    "French": "fr",
     "Italian": "it",
     "Japanese": "ja",
     "Korean": "ko",
-    "Malay": "ms",
+    "Russian": "ru",
+    "Chinese": "zh",
     "Dutch": "nl",
     "Norwegian": "no",
     "Polish": "pl",
     "Portuguese": "pt",
-    "Russian": "ru",
     "Swedish": "sv",
     "Swahili": "sw",
     "Turkish": "tr",
-    "Chinese": "zh",
 }
 
 LANGUAGE_CODE_REVERSED = {v: k for k, v in LANGUAGE_CODE.items()}

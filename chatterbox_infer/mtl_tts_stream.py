@@ -255,7 +255,6 @@ class ChatterboxMultilingualTTS:
         cached = self._cond_cache.get(key)
 
         if cached is None:
-            # --- 로딩/리샘플 (float32 유지) ---
             if isinstance(wav_fpath, str):
                 s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR, mono=True, dtype=np.float32)
                 ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR, res_type="soxr_qq")
@@ -311,7 +310,6 @@ class ChatterboxMultilingualTTS:
         else:
             assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
     
-        # 텍스트 전처리/토큰화
         text = punc_norm(text)
         text_tokens = self.tokenizer.text_to_tokens(text, language_id=language_id.lower()).to(self.device)
         text_tokens = torch.cat([text_tokens, text_tokens], dim=0)
@@ -319,7 +317,6 @@ class ChatterboxMultilingualTTS:
         text_tokens = F.pad(text_tokens, (1, 0), value=sot)
         text_tokens = F.pad(text_tokens, (0, 1), value=eot)
     
-        # 토큰 길이에 따른 최대 오디오 토큰 수
         alpha, min_new_tokens, max_cap = 4.0, 100, 600
         text_len = text_tokens.shape[-1]
         max_new_tokens = min(max_cap, max(min_new_tokens, int(alpha * text_len)))
@@ -328,13 +325,7 @@ class ChatterboxMultilingualTTS:
         queue = asyncio.Queue()
 
         lm_times = 0
-    
-        # async def run_decoder(speech_tokens, ref_dict):
-        #     wav, _ = self.s3gen.inference(speech_tokens=speech_tokens, ref_dict=ref_dict)
-        #     await queue.put({"type": "chunk", "audio": wav})
         async def run_decoder(speech_tokens, ref_dict):
-            # s3gen.inference가 CPU를 많이 사용하는 동기 함수라고 가정
-            # asyncio.to_thread를 사용해 별도 스레드에서 실행하여 이벤트 루프를 막지 않도록 함
             wav, _ = await asyncio.to_thread(
                 self.s3gen.inference,
                 speech_tokens=speech_tokens,

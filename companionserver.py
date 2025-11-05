@@ -224,9 +224,10 @@ async def ws_endpoint(ws: WebSocket):
                                 print("[Voice End] - ", sess.transcript)
                                 audio = sess.audios[:WHISPER_SR * 8]
                                 turn_result = predict_endpoint(audio)
+                                sess.current_audio_state = "none"
                                 
                                 print("Turn result : ", turn_result, "\n")
-                                if turn_result['prediction'] != 1: # 1 is Complete
+                                if turn_result['probability'] < 0.2:
                                     score = turn_result['probability']
                                     delay = 3.0 * (1 - score)
                                     # We can ignore when vad evenet is end but smart turn detection is not.
@@ -238,14 +239,14 @@ async def ws_endpoint(ws: WebSocket):
                             
                                     # 2) 새로 1초짜리 타이머 걸기
                                     sess.pending_turn_task = asyncio.create_task(
-                                        delayed_force_turn_end(sess, delay=delay)
+                                        delayed_force_turn_end(sess, delay=delay, script=sess.transcript.strip())
                                     )
                                     continue
                                 
                                 await sess.out_q.put(
                                     jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True})
                                 )
-                                sess.current_audio_state = "none"
+                                
                                 sess.audios = np.empty(0, dtype=np.float32)
                                 sess.end_scripting_time = time.time() % 1000
 
@@ -488,7 +489,8 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
         partial_text = await _transcribe_tts_buffer(sess)
         print("[interrupt_output] partial_text: ", partial_text)
         if partial_text != "":
-            trimmed = _trim_last_one_words(partial_text.strip())
+            # trimmed = _trim_last_one_words(partial_text.strip())
+            trimmed = partial_text.strip()
             print("[interrupt_output] trimmed: ", trimmed)
             try:
                 sess.outputs[-1] = trimmed
@@ -500,18 +502,18 @@ async def interrupt_output(sess: Session, reason: str = "start speaking"):
     
     print("[interrupt_output] took ", time.time() - st)
 
-async def delayed_force_turn_end(sess: Session, delay: float = 1.0):
+async def delayed_force_turn_end(sess: Session, delay: float = 1.0, script: str = ''):
     try:
         await asyncio.sleep(delay)
+        print("Start\n\n", sess.current_audio_state, script)
         if sess.current_audio_state == "start":
             return
-        print('1초 동안 말을 안해서 그냥 끊어버림')
 
         if sess.transcript.strip():
             await sess.out_q.put(
-                jdumps({"type": "transcript", "text": sess.transcript.strip(), "is_final": True})
+                jdumps({"type": "transcript", "text": script, "is_final": True})
             )
-            sess.answer_q.put_nowait(sess.transcript.strip())
+            sess.answer_q.put_nowait(script)
             sess.transcript = ""
 
         sess.current_audio_state = "none"
